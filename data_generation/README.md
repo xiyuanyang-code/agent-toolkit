@@ -1,26 +1,5 @@
 # Data Generations Pipeline
 
-## Structures
-
-```text
-.
-├── config.yaml
-├── example
-│   └── generate_sample.py
-├── logs
-├── output
-├── pipeline.py
-├── prompts
-│   ├── system_prompts
-│   │   └── default.txt
-│   └── user_prompts
-│       └── default.txt
-├── README.md
-└── utils
-    ├── llm_client.py
-    └── logger_config.py
-```
-
 ## Introduction
 
 数据合成的基本模板
