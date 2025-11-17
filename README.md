@@ -12,22 +12,34 @@
 ```text
 .
 ├── config
-│   └── data_generation.example.yaml
+│   ├── data_generation.example.yaml
+│   └── judgement.example.yaml
 ├── data
 ├── data_generation
 │   ├── __init__.py
 │   ├── pipeline.py
-│   └── README.md
+│   ├── README.md
+│   └── stats.py
 ├── example
-│   └── data_generation_example.py
+│   ├── data_generation_example.py
+│   └── judgement_example.py
+├── judgement
+│   ├── __init__.py
+│   ├── pipeline.py
+│   ├── README.md
+│   └── stats.py
 ├── logs
 ├── main.py
 ├── prompt
 │   ├── system_prompts
+│   │   ├── default.prompt_evaluation.txt
 │   │   └── default.prompt.txt
 │   └── user_prompts
+│       ├── default.prompt_evaluation.txt
 │       └── default.prompt.txt
 ├── README.md
+├── spec
+│   └── task.md
 └── utils
     ├── llm_client.py
     └── logger_config.py
@@ -57,10 +69,5 @@
 - `environment`: Agent Interactions with the environment
     - Coding Environment
     - Searching Environment
-- `evaluation`:
+- `evaluation` & `judgement`:
     - simple scripts for agent evaluations
-
-## Todo List
-
-- build and simple agent interactions
-    - 关键在于明确简洁的接口
