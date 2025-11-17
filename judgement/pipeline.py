@@ -10,6 +10,8 @@ from tqdm import tqdm
 from utils.llm_client import OpenAIClient
 from utils.logger_config import get_logger
 import tiktoken
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import threading
 
 dotenv.load_dotenv(override=True)
 
@@ -41,7 +43,7 @@ class JudgementPipeline:
         # 用传入的参数覆盖配置文件中的参数
         self._update_config_with_kwargs(self.config, kwargs)
 
-        self.client = OpenAIClient(self.config)
+        self.config_for_client = self.config  # 保存配置以供线程中创建客户端使用
         self.output_dir = self._setup_output_dir()
 
         # prompt config path
@@ -51,7 +53,7 @@ class JudgementPipeline:
         self.user_prompt_path = self.config.get("prompts", {}).get("user_prompt_path")
 
         # 初始化文件锁和结果存储
-        self.file_lock = asyncio.Lock()
+        self.file_lock = threading.Lock()
         self.results = []
         
         # 初始化tokenizer
@@ -119,6 +121,18 @@ class JudgementPipeline:
 
         return experiment_dir
 
+    def extract_all(self, pattern_name: str, text: str) -> List[str]:
+        """
+        提取文本中所有 <pattern_name>...</pattern_name> 的内容（支持多行、属性、大小写）
+
+        示例：
+            extract_all("draft", "<draft>hello</draft>") -> ["hello"]
+        """
+        tag = re.escape(pattern_name.strip().lower())
+        pattern = rf"<{tag}\b[^>]*>\s*(.*?)\s*</{tag}>"
+        matches = re.findall(pattern, text, re.DOTALL | re.IGNORECASE)
+        return [m.strip() for m in matches]
+
     def extract_judgement_from_response(self, response: str) -> Optional[Dict[str, Any]]:
         """
         从LLM响应中提取评判结果
@@ -130,31 +144,26 @@ class JudgementPipeline:
             Optional[Dict[str, Any]]: 提取的评判结果，如果未找到则返回None
         """
         try:
-            # 尝试直接解析JSON
-            data = json.loads(response)
-            # 检查是否包含评判所需的关键字段
-            required_keys = ['accuracy', 'relevance', 'clarity', 'completeness', 'overall', 'comment']
-            if all(key in data for key in required_keys):
-                return data
-        except json.JSONDecodeError:
-            # 如果不是JSON格式，尝试使用正则表达式提取
-            # 匹配JSON格式的评判结果
-            pattern = r'\{[\s\S]*?("accuracy"[^}]*"relevance"[^}]*"clarity"[^}]*"completeness"[^}]*"overall"[^}]*"comment"[^}]*)\}'
-            match = re.search(pattern, response, re.DOTALL)
-            if match:
-                try:
-                    # 提取可能的JSON部分
-                    json_part = '{' + match.group(1) + '}'
-                    # 尝试修复和解析
-                    data = json.loads(json_part)
-                    required_keys = ['accuracy', 'relevance', 'clarity', 'completeness', 'overall', 'comment']
-                    if all(key in data for key in required_keys):
-                        return data
-                except:
-                    pass
+            accuracy_list = self.extract_all("accuracy", response)
+            relevance_list = self.extract_all("relevance", response)
+            clarity_list = self.extract_all("clarity", response)
+            completeness_list = self.extract_all("completeness", response)
+            overall_list = self.extract_all("overall", response)
+            comment_list = self.extract_all("comment", response)
 
+            # 取每个标签的最后一个值
+            result = {
+                "accuracy": int(accuracy_list[-1]) if accuracy_list else None,
+                "relevance": int(relevance_list[-1]) if relevance_list else None,
+                "clarity": int(clarity_list[-1]) if clarity_list else None,
+                "completeness": int(completeness_list[-1]) if completeness_list else None,
+                "overall": int(overall_list[-1]) if overall_list else None,
+                "comment": comment_list[-1] if comment_list else None
+            }
+
+            return result
         except Exception as e:
-            self.logger.error(f"Error extracting judgement from response: {e}")
+            self.logger.error(f"Error extracting judgement from response using regex: {e}")
 
         return None
 
@@ -197,14 +206,14 @@ class JudgementPipeline:
         self.logger.error(f"Error, failed to load prompt file from {file_path}")
         return ""
 
-    async def save_result(self, result: Dict[str, Any]) -> None:
+    def save_result(self, result: Dict[str, Any]) -> None:
         """
         持续保存单个评测结果到jsonl文件
 
         Args:
             result (Dict[str, Any]): 单个评测结果
         """
-        async with self.file_lock:
+        with self.file_lock:
             with open(self.experiment_path, "a", encoding="utf-8") as file:
                 file.write(json.dumps(result, ensure_ascii=False) + "\n")
             self.results.append(result)
@@ -224,7 +233,7 @@ class JudgementPipeline:
         return len(self.tokenizer.encode(text))
 
     async def run_model_based_judgement(
-        self, user_prompt: str, system_prompt: str, judgement_function=None, input_data=None
+        self, user_prompt: str, system_prompt: str, judgement_function=None, input_data=None, client=None
     ):
         """
         运行基于模型的评判
@@ -234,11 +243,14 @@ class JudgementPipeline:
             system_prompt (str): 系统提示词
             judgement_function (Callable): 评判函数
             input_data (Dict): 输入数据
+            client: OpenAI客户端实例
 
         Returns:
             Dict: 评判结果
         """
-        response = await self.client.safe_chat_completion(
+        # 如果提供了client参数，则使用它；否则使用实例的client
+        client_to_use = client if client is not None else self.client
+        response = await client_to_use.safe_chat_completion(
             prompt=user_prompt, system_prompt=system_prompt
         )
 
@@ -270,14 +282,18 @@ class JudgementPipeline:
         """
         rule_judgement = {}
 
-        # 默认统计信息
-        query = input_data.get("query", "")
+        # 默认统计信息 - 只统计存在的字段
         answer = input_data.get("answer", "")
-        gt = input_data.get("GT", "")
+        if answer:
+            rule_judgement["answer-token-count"] = self.count_tokens(answer)
         
-        rule_judgement["query-token-count"] = self.count_tokens(query)
-        rule_judgement["answer-token-count"] = self.count_tokens(answer)
-        rule_judgement["GT-token-count"] = self.count_tokens(gt)
+        query = input_data.get("query", "")
+        if query:
+            rule_judgement["query-token-count"] = self.count_tokens(query)
+            
+        gt = input_data.get("GT", "")
+        if gt:
+            rule_judgement["GT-token-count"] = self.count_tokens(gt)
 
         # 用户自定义规则函数
         if rule_functions:
@@ -293,7 +309,8 @@ class JudgementPipeline:
     async def run_single_task(
         self, i: int, input_data: Dict[str, Any], 
         model_judgement_function=None, 
-        rule_functions: Dict[str, Callable] = None
+        rule_functions: Dict[str, Callable] = None,
+        client=None
     ):
         """处理单个评判任务"""
         try:
@@ -326,8 +343,11 @@ class JudgementPipeline:
                     system_prompt=system_prompt,
                     input_data=input_data,
                     judgement_function=model_judgement_function,
+                    client=client,
                 )
                 self.logger.debug(f"Model-based judgement: {model_judgement}")
+            else:
+                self.logger.warning("System prompt path or user prompt path not set, skipping model-based judgement")
 
             # 运行基于规则的评判
             rule_judgement = await self.run_rule_based_judgement(
@@ -345,7 +365,7 @@ class JudgementPipeline:
             }
 
             # 持续保存结果
-            await self.save_result(result)
+            self.save_result(result)
 
             return result
 
@@ -356,10 +376,10 @@ class JudgementPipeline:
                 "error": str(e),
                 "timestamp": datetime.now().isoformat(),
             }
-            await self.save_result(error_result)
+            self.save_result(error_result)
             return error_result
 
-    async def run(
+    def run(
         self, data_pool, concurrency_limit: int = 5, 
         model_judgement_function: Callable = None,
         rule_functions: Dict[str, Callable] = None
@@ -377,42 +397,48 @@ class JudgementPipeline:
         self.logger.info(f"Concurrency limit: {concurrency_limit}")
         self.logger.info(f"Total tasks: {len(data_pool)}")
 
-        # 创建信号量以限制并发数
-        semaphore = asyncio.Semaphore(concurrency_limit)
-
-        async def run_with_semaphore(i: int, input_data: Dict[str, Any]):
-            async with semaphore:
-                result = await self.run_single_task(
+        # 定义执行单个任务的函数
+        def run_single_task_sync(i: int, input_data: Dict[str, Any]):
+            # 在线程中创建新的客户端实例
+            client = OpenAIClient(self.config_for_client)
+            
+            # 创建一个新的事件循环
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            
+            try:
+                # 在新的事件循环中运行异步任务
+                result = loop.run_until_complete(self.run_single_task(
                     i, input_data, 
                     model_judgement_function=model_judgement_function,
-                    rule_functions=rule_functions
-                )
+                    rule_functions=rule_functions,
+                    client=client
+                ))
                 return result
+            finally:
+                loop.close()
 
-        # 创建所有任务
-        tasks = [
-            run_with_semaphore(i, input_data) for i, input_data in enumerate(data_pool)
-        ]
+        # 使用线程池执行器
+        with ThreadPoolExecutor(max_workers=concurrency_limit) as executor:
+            futures = [
+                executor.submit(run_single_task_sync, i, input_data)
+                for i, input_data in enumerate(data_pool)
+            ]
 
-        # 创建进度条
-        pbar = tqdm(total=len(data_pool), desc="Processing judgements", unit="task")
-
-        # 创建一个异步任务来处理进度条更新
-        async def update_progress_when_done():
+            # 创建进度条
+            pbar = tqdm(total=len(data_pool), desc="Processing judgements", unit="task")
+            
+            # 收集结果
+            results = []
             completed = 0
-            for coro in asyncio.as_completed(tasks):
-                result = await coro
+            for future in as_completed(futures):
+                result = future.result()
+                results.append(result)
                 completed += 1
                 pbar.update(1)
                 pbar.set_postfix({"Completed": f"{completed}/{len(data_pool)}"})
-                yield result
 
-        # 收集结果
-        results = []
-        async for result in update_progress_when_done():
-            results.append(result)
-
-        pbar.close()
+            pbar.close()
 
         # 处理异常结果
         processed_results = []

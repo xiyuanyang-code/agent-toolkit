@@ -9,6 +9,8 @@ import asyncio
 from tqdm import tqdm
 from utils.llm_client import OpenAIClient
 from utils.logger_config import get_logger
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import threading
 
 dotenv.load_dotenv(override=True)
 
@@ -34,7 +36,7 @@ class DataGenerationPipeline:
         # 用传入的参数覆盖配置文件中的参数
         self._update_config_with_kwargs(self.config, kwargs)
 
-        self.client = OpenAIClient(self.config)
+        self.config_for_client = self.config  # 保存配置以供线程中创建客户端使用
         self.output_dir = self._setup_output_dir()
 
         # prompt config path
@@ -44,7 +46,7 @@ class DataGenerationPipeline:
         self.user_prompt_path = self.config.get("prompts", {}).get("user_prompt_path")
 
         # 初始化文件锁和结果存储
-        self.file_lock = asyncio.Lock()
+        self.file_lock = threading.Lock()
         self.results = []
 
     def _update_config_with_kwargs(
@@ -140,14 +142,14 @@ class DataGenerationPipeline:
         self.logger.error(f"Error, failed to load prompt file from {file_path}")
         return ""
 
-    async def save_result(self, result: Dict[str, Any]) -> None:
+    def save_result(self, result: Dict[str, Any]) -> None:
         """
         持续保存单个生成结果到jsonl文件
 
         Args:
             result (Dict[str, Any]): 单个生成结果
         """
-        async with self.file_lock:
+        with self.file_lock:
             with open(self.experiment_path, "a", encoding="utf-8") as file:
                 file.write(json.dumps(result, ensure_ascii=False) + "\n")
             self.results.append(result)
@@ -195,9 +197,11 @@ class DataGenerationPipeline:
         return extract
 
     async def run_single_queries(
-        self, user_prompt: str, system_prompt: str, extract_function=None, input_data=None
+        self, user_prompt: str, system_prompt: str, extract_function=None, input_data=None, client=None
     ):
-        response = await self.client.safe_chat_completion(
+        # 如果提供了client参数，则使用它；否则使用实例的client
+        client_to_use = client if client is not None else self.client
+        response = await client_to_use.safe_chat_completion(
             prompt=user_prompt, system_prompt=system_prompt
         )
 
@@ -213,12 +217,12 @@ class DataGenerationPipeline:
             result["extracted"] = extract_function(response)
 
         # 持续保存结果
-        await self.save_result(result)
+        self.save_result(result)
 
         return result
 
     async def run_single_task(
-        self, i: int, input_data: Dict[str, Any], extract_function=None
+        self, i: int, input_data: Dict[str, Any], extract_function=None, client=None
     ):
         """处理单个任务"""
         try:
@@ -244,6 +248,7 @@ class DataGenerationPipeline:
                 system_prompt=system_prompt,
                 input_data=input_data,
                 extract_function=extract_function,
+                client=client,
             )
             self.logger.debug(f"Getting result: {result}")
             return result
@@ -255,10 +260,10 @@ class DataGenerationPipeline:
                 "error": str(e),
                 "timestamp": datetime.now().isoformat(),
             }
-            await self.save_result(error_result)
+            self.save_result(error_result)
             return error_result
 
-    async def run(
+    def run(
         self, data_pool, concurrency_limit: int = 5, extract_function: Callable = None
     ):
         """
@@ -272,40 +277,45 @@ class DataGenerationPipeline:
         self.logger.info(f"Concurrency limit: {concurrency_limit}")
         self.logger.info(f"Total tasks: {len(data_pool)}")
 
-        # 创建信号量以限制并发数
-        semaphore = asyncio.Semaphore(concurrency_limit)
-
-        async def run_with_semaphore(i: int, input_data: Dict[str, Any]):
-            async with semaphore:
-                result = await self.run_single_task(
-                    i, input_data, extract_function=extract_function
-                )
+        # 定义执行单个任务的函数
+        def run_single_task_sync(i: int, input_data: Dict[str, Any]):
+            # 在线程中创建新的客户端实例
+            client = OpenAIClient(self.config_for_client)
+            
+            # 创建一个新的事件循环
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            
+            try:
+                # 在新的事件循环中运行异步任务
+                result = loop.run_until_complete(self.run_single_task(
+                    i, input_data, extract_function=extract_function, client=client
+                ))
                 return result
+            finally:
+                loop.close()
 
-        # 创建所有任务
-        tasks = [
-            run_with_semaphore(i, input_data) for i, input_data in enumerate(data_pool)
-        ]
+        # 使用线程池执行器
+        with ThreadPoolExecutor(max_workers=concurrency_limit) as executor:
+            futures = [
+                executor.submit(run_single_task_sync, i, input_data)
+                for i, input_data in enumerate(data_pool)
+            ]
 
-        # 创建进度条
-        pbar = tqdm(total=len(data_pool), desc="Processing tasks", unit="task")
-
-        # 创建一个异步任务来处理进度条更新
-        async def update_progress_when_done():
+            # 创建进度条
+            pbar = tqdm(total=len(data_pool), desc="Processing tasks", unit="task")
+            
+            # 收集结果
+            results = []
             completed = 0
-            for coro in asyncio.as_completed(tasks):
-                result = await coro
+            for future in as_completed(futures):
+                result = future.result()
+                results.append(result)
                 completed += 1
                 pbar.update(1)
                 pbar.set_postfix({"Completed": f"{completed}/{len(data_pool)}"})
-                yield result
 
-        # 收集结果
-        results = []
-        async for result in update_progress_when_done():
-            results.append(result)
-
-        pbar.close()
+            pbar.close()
 
         # 处理异常结果
         processed_results = []

@@ -1,0 +1,18 @@
+# model config, for default configurations
+model:
+  provider: openai
+  api_key: your-key
+  base_url: your-url
+  model: "gpt-4o-mini-2024-07-18" 
+  rate_limit: 20 
+  max_tokens: 5012
+  temperature: 0.7 
+
+prompts:
+  system_prompt_path: "prompts/system_prompts/judgement_default.txt"
+  user_prompt_path: "prompts/user_prompts/judgement_default.txt"
+
+output_data:
+  output_dir: "output"
+  experiment_name: "judgement_experiment"
+  need_time_stamp: false

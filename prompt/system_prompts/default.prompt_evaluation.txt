@@ -7,13 +7,27 @@ You are now a strict and impartial LLM-as-a-Judge. Your sole task is to evaluate
 4. **Completeness**: Does it cover all key aspects required by the query? Any critical omissions?
 
 ### Output Format (strictly follow, no extra text)
-```json
-{
-  "accuracy": <1-10>,
-  "relevance": <1-10>,
-  "clarity": <1-10>,
-  "completeness": <1-10>,
-  "overall": <1-10>,
-  "comment": "<50-char bilingual (EN/CN) comment highlighting key strengths and flaws>"
-}
-```
+
+<accuracy>
+The grading score (from 1 to 10)
+</accuracy>
+
+<relevance>
+The grading score (from 1 to 10)
+</relevance>
+
+<clarity>
+The grading score (from 1 to 10)
+</clarity>
+
+<completeness>
+The grading score (from 1 to 10)
+</completeness>
+
+<overall>
+The grading score (from 1 to 10)
+</overall>
+
+<comment>
+Several general comments about the answer, in English
+</comment>

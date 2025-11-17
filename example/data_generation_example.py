@@ -2,8 +2,7 @@ import sys
 import os
 
 sys.path.append(os.getcwd())
-import asyncio
-from data_generation import DataGenerationPipeline
+from data_generation import DataGenerationPipeline, DataGenerationStats
 
 
 def load_sample_data():
@@ -35,8 +34,8 @@ def load_sample_data():
     return data_pool
 
 
-async def main():
-    pipeline2 = DataGenerationPipeline(
+def main():
+    pipeline = DataGenerationPipeline(
         temperature=0.9,  # 覆盖模型温度
         max_tokens=2048,  # 覆盖最大token数
         system_prompt_path="prompt/system_prompts/default.prompt.txt",  # 覆盖系统提示词路径
@@ -49,15 +48,35 @@ async def main():
         need_time_stamp=False
     )
     data_pool = load_sample_data()
-    results = await pipeline2.run(
+    results = pipeline.run(
         data_pool,
         concurrency_limit=5,
-        extract_function=pipeline2.make_default_extractor(pattern_name="draft"),
+        extract_function=pipeline.make_default_extractor(pattern_name="draft"),
         # 支持自定义的复杂 extractions
         # 类内部也提供了基本提取的 函数工厂模式
     )
     print(results)
+    
+    # 使用统计模块分析结果
+    stats = DataGenerationStats()
+    
+    # 定义需要统计的数值字段
+    numeric_fields = [
+        "response.length",  # 响应长度
+    ]
+    
+    # 定义需要统计分布的字段
+    distribution_fields = [
+        "response.length"  # 响应长度分布
+    ]
+    
+    # 生成并打印统计报告
+    stats.print_report(
+        pipeline.experiment_path,  # 使用pipeline生成的实验结果文件路径
+        numeric_fields=numeric_fields,
+        distribution_fields=distribution_fields
+    )
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()

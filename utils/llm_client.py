@@ -69,7 +69,7 @@ class OpenAIClient:
         
         # 初始化速率限制器
         self.rate_limiter = RateLimiter(max_per_minute=rate_limit)
-        logger.info("Successfully initialize OpenAIClient")
+        logger.debug("Successfully initialize OpenAIClient")
     
     async def chat_completion(self, prompt: str, system_prompt: str = None) -> Optional[str]:
         """
