@@ -197,7 +197,12 @@ class DataGenerationPipeline:
         return extract
 
     async def run_single_queries(
-        self, user_prompt: str, system_prompt: str, extract_function=None, input_data=None, client=None
+        self,
+        user_prompt: str,
+        system_prompt: str,
+        extract_function=None,
+        input_data=None,
+        client=None,
     ):
         # 如果提供了client参数，则使用它；否则使用实例的client
         client_to_use = client if client is not None else self.client
@@ -263,6 +268,24 @@ class DataGenerationPipeline:
             self.save_result(error_result)
             return error_result
 
+    async def run_all_tasks(
+        self, data_pool, concurrency_limit: int = 5, extract_function: Callable = None
+    ):
+        sem = asyncio.Semaphore(concurrency_limit)
+
+        async def worker(i, input_data):
+            async with sem:
+                client = OpenAIClient(self.config_for_client)
+                return await self.run_single_task(
+                    i, input_data, extract_function, client
+                )
+
+        tasks = [worker(i, x) for i, x in enumerate(data_pool)]
+        results = []
+        for coro in tqdm(asyncio.as_completed(tasks), total=len(tasks)):
+            results.append(await coro)
+        return results
+
     def run(
         self, data_pool, concurrency_limit: int = 5, extract_function: Callable = None
     ):
@@ -277,45 +300,55 @@ class DataGenerationPipeline:
         self.logger.info(f"Concurrency limit: {concurrency_limit}")
         self.logger.info(f"Total tasks: {len(data_pool)}")
 
-        # 定义执行单个任务的函数
-        def run_single_task_sync(i: int, input_data: Dict[str, Any]):
-            # 在线程中创建新的客户端实例
-            client = OpenAIClient(self.config_for_client)
-            
-            # 创建一个新的事件循环
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            
-            try:
-                # 在新的事件循环中运行异步任务
-                result = loop.run_until_complete(self.run_single_task(
-                    i, input_data, extract_function=extract_function, client=client
-                ))
-                return result
-            finally:
-                loop.close()
+        results = asyncio.run(
+            self.run_all_tasks(
+                data_pool=data_pool,
+                concurrency_limit=concurrency_limit,
+                extract_function=extract_function,
+            )
+        )
+
+        # # 定义执行单个任务的函数
+        # def run_single_task_sync(i: int, input_data: Dict[str, Any]):
+        #     # 在线程中创建新的客户端实例
+        #     client = OpenAIClient(self.config_for_client)
+
+        #     # 创建一个新的事件循环
+        #     loop = asyncio.new_event_loop()
+        #     asyncio.set_event_loop(loop)
+
+        #     try:
+        #         # 在新的事件循环中运行异步任务
+        #         result = loop.run_until_complete(
+        #             self.run_single_task(
+        #                 i, input_data, extract_function=extract_function, client=client
+        #             )
+        #         )
+        #         return result
+        #     finally:
+        #         loop.close()
 
         # 使用线程池执行器
-        with ThreadPoolExecutor(max_workers=concurrency_limit) as executor:
-            futures = [
-                executor.submit(run_single_task_sync, i, input_data)
-                for i, input_data in enumerate(data_pool)
-            ]
+        # with ThreadPoolExecutor(max_workers=concurrency_limit) as executor:
+        #     futures = [
+        #         executor.submit(run_single_task_sync, i, input_data)
+        #         for i, input_data in enumerate(data_pool)
+        #     ]
 
-            # 创建进度条
-            pbar = tqdm(total=len(data_pool), desc="Processing tasks", unit="task")
-            
-            # 收集结果
-            results = []
-            completed = 0
-            for future in as_completed(futures):
-                result = future.result()
-                results.append(result)
-                completed += 1
-                pbar.update(1)
-                pbar.set_postfix({"Completed": f"{completed}/{len(data_pool)}"})
+        #     # 创建进度条
+        #     pbar = tqdm(total=len(data_pool), desc="Processing tasks", unit="task")
 
-            pbar.close()
+        #     # 收集结果
+        #     results = []
+        #     completed = 0
+        #     for future in as_completed(futures):
+        #         result = future.result()
+        #         results.append(result)
+        #         completed += 1
+        #         pbar.update(1)
+        #         pbar.set_postfix({"Completed": f"{completed}/{len(data_pool)}"})
+
+        #     pbar.close()
 
         # 处理异常结果
         processed_results = []

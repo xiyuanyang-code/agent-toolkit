@@ -15,13 +15,20 @@ import threading
 
 dotenv.load_dotenv(override=True)
 
+
 class JudgementPipeline:
     """
     Judgement Pipeline类
     支持Model-Based Judgement和Rule-Based Judgement
     """
 
-    def __init__(self, job_name: str, experiment_name: str, config_path: str = "./config/judgement.yaml", **kwargs):
+    def __init__(
+        self,
+        job_name: str,
+        experiment_name: str,
+        config_path: str = "./config/judgement.yaml",
+        **kwargs,
+    ):
         """
         初始化Pipeline
 
@@ -35,7 +42,7 @@ class JudgementPipeline:
         self.config_path = config_path
         self.config = self._load_config()
         self.timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-        
+
         # 任务和实验名称
         self.job_name = job_name
         self.experiment_name = experiment_name
@@ -55,7 +62,7 @@ class JudgementPipeline:
         # 初始化文件锁和结果存储
         self.file_lock = threading.Lock()
         self.results = []
-        
+
         # 初始化tokenizer
         self.tokenizer = tiktoken.get_encoding("cl100k_base")
 
@@ -116,7 +123,9 @@ class JudgementPipeline:
         experiment_dir = os.path.join(job_dir, self.experiment_name, self.timestamp)
         self.experiment_dir = experiment_dir
         self.logger.info(f"Loading experiment: {experiment_dir}")
-        self.experiment_path = os.path.join(self.experiment_dir, "judgement_result.jsonl")
+        self.experiment_path = os.path.join(
+            self.experiment_dir, "judgement_result.jsonl"
+        )
         os.makedirs(experiment_dir, exist_ok=True)
 
         return experiment_dir
@@ -133,7 +142,9 @@ class JudgementPipeline:
         matches = re.findall(pattern, text, re.DOTALL | re.IGNORECASE)
         return [m.strip() for m in matches]
 
-    def extract_judgement_from_response(self, response: str) -> Optional[Dict[str, Any]]:
+    def extract_judgement_from_response(
+        self, response: str
+    ) -> Optional[Dict[str, Any]]:
         """
         从LLM响应中提取评判结果
 
@@ -156,14 +167,18 @@ class JudgementPipeline:
                 "accuracy": int(accuracy_list[-1]) if accuracy_list else None,
                 "relevance": int(relevance_list[-1]) if relevance_list else None,
                 "clarity": int(clarity_list[-1]) if clarity_list else None,
-                "completeness": int(completeness_list[-1]) if completeness_list else None,
+                "completeness": (
+                    int(completeness_list[-1]) if completeness_list else None
+                ),
                 "overall": int(overall_list[-1]) if overall_list else None,
-                "comment": comment_list[-1] if comment_list else None
+                "comment": comment_list[-1] if comment_list else None,
             }
 
             return result
         except Exception as e:
-            self.logger.error(f"Error extracting judgement from response using regex: {e}")
+            self.logger.error(
+                f"Error extracting judgement from response using regex: {e}"
+            )
 
         return None
 
@@ -174,6 +189,7 @@ class JudgementPipeline:
         Returns:
             Callable: 评判提取函数
         """
+
         def extract_judgement(response: str) -> Optional[Dict[str, Any]]:
             return self.extract_judgement_from_response(response)
 
@@ -233,7 +249,12 @@ class JudgementPipeline:
         return len(self.tokenizer.encode(text))
 
     async def run_model_based_judgement(
-        self, user_prompt: str, system_prompt: str, judgement_function=None, input_data=None, client=None
+        self,
+        user_prompt: str,
+        system_prompt: str,
+        judgement_function=None,
+        input_data=None,
+        client=None,
     ):
         """
         运行基于模型的评判
@@ -286,11 +307,11 @@ class JudgementPipeline:
         answer = input_data.get("answer", "")
         if answer:
             rule_judgement["answer-token-count"] = self.count_tokens(answer)
-        
+
         query = input_data.get("query", "")
         if query:
             rule_judgement["query-token-count"] = self.count_tokens(query)
-            
+
         gt = input_data.get("GT", "")
         if gt:
             rule_judgement["GT-token-count"] = self.count_tokens(gt)
@@ -307,10 +328,12 @@ class JudgementPipeline:
         return rule_judgement
 
     async def run_single_task(
-        self, i: int, input_data: Dict[str, Any], 
-        model_judgement_function=None, 
+        self,
+        i: int,
+        input_data: Dict[str, Any],
+        model_judgement_function=None,
         rule_functions: Dict[str, Callable] = None,
-        client=None
+        client=None,
     ):
         """处理单个评判任务"""
         try:
@@ -347,19 +370,22 @@ class JudgementPipeline:
                 )
                 self.logger.debug(f"Model-based judgement: {model_judgement}")
             else:
-                self.logger.warning("System prompt path or user prompt path not set, skipping model-based judgement")
+                self.logger.warning(
+                    "System prompt path or user prompt path not set, skipping model-based judgement"
+                )
 
             # 运行基于规则的评判
             rule_judgement = await self.run_rule_based_judgement(
-                input_data=input_data,
-                rule_functions=rule_functions
+                input_data=input_data, rule_functions=rule_functions
             )
             self.logger.debug(f"Rule-based judgement: {rule_judgement}")
 
             # 合并结果
             result = {
                 "input": input_data,
-                "model_based_judgement": model_judgement.get("model_based_judgement", {}),
+                "model_based_judgement": model_judgement.get(
+                    "model_based_judgement", {}
+                ),
                 "rule_based_judgement": rule_judgement,
                 "timestamp": datetime.now().isoformat(),
             }
@@ -379,10 +405,34 @@ class JudgementPipeline:
             self.save_result(error_result)
             return error_result
 
-    def run(
-        self, data_pool, concurrency_limit: int = 5, 
+    async def run_all_task(
+        self,
+        data_pool,
+        concurrency_limit: int = 5,
         model_judgement_function: Callable = None,
-        rule_functions: Dict[str, Callable] = None
+        rule_functions: Dict[str, Callable] = None,
+    ):
+        sem = asyncio.Semaphore(concurrency_limit)
+
+        async def worker(i, input_data):
+            async with sem:
+                client = OpenAIClient(self.config_for_client)
+                return await self.run_single_task(
+                    i, input_data, model_judgement_function, rule_functions, client
+                )
+
+        tasks = [worker(i, x) for i, x in enumerate(data_pool)]
+        results = []
+        for coro in tqdm(asyncio.as_completed(tasks), total=len(tasks)):
+            results.append(await coro)
+        return results
+
+    def run(
+        self,
+        data_pool,
+        concurrency_limit: int = 5,
+        model_judgement_function: Callable = None,
+        rule_functions: Dict[str, Callable] = None,
     ):
         """
         运行评判管道，支持并发处理
@@ -397,48 +447,60 @@ class JudgementPipeline:
         self.logger.info(f"Concurrency limit: {concurrency_limit}")
         self.logger.info(f"Total tasks: {len(data_pool)}")
 
-        # 定义执行单个任务的函数
-        def run_single_task_sync(i: int, input_data: Dict[str, Any]):
-            # 在线程中创建新的客户端实例
-            client = OpenAIClient(self.config_for_client)
-            
-            # 创建一个新的事件循环
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            
-            try:
-                # 在新的事件循环中运行异步任务
-                result = loop.run_until_complete(self.run_single_task(
-                    i, input_data, 
-                    model_judgement_function=model_judgement_function,
-                    rule_functions=rule_functions,
-                    client=client
-                ))
-                return result
-            finally:
-                loop.close()
+        # # 定义执行单个任务的函数
+        # def run_single_task_sync(i: int, input_data: Dict[str, Any]):
+        #     # 在线程中创建新的客户端实例
+        #     client = OpenAIClient(self.config_for_client)
 
-        # 使用线程池执行器
-        with ThreadPoolExecutor(max_workers=concurrency_limit) as executor:
-            futures = [
-                executor.submit(run_single_task_sync, i, input_data)
-                for i, input_data in enumerate(data_pool)
-            ]
+        #     # 创建一个新的事件循环
+        #     loop = asyncio.new_event_loop()
+        #     asyncio.set_event_loop(loop)
 
-            # 创建进度条
-            pbar = tqdm(total=len(data_pool), desc="Processing judgements", unit="task")
-            
-            # 收集结果
-            results = []
-            completed = 0
-            for future in as_completed(futures):
-                result = future.result()
-                results.append(result)
-                completed += 1
-                pbar.update(1)
-                pbar.set_postfix({"Completed": f"{completed}/{len(data_pool)}"})
+        #     try:
+        #         # 在新的事件循环中运行异步任务
+        #         result = loop.run_until_complete(
+        #             self.run_single_task(
+        #                 i,
+        #                 input_data,
+        #                 model_judgement_function=model_judgement_function,
+        #                 rule_functions=rule_functions,
+        #                 client=client,
+        #             )
+        #         )
+        #         return result
+        #     finally:
+        #         loop.close()
 
-            pbar.close()
+        # # 使用线程池执行器
+        # with ThreadPoolExecutor(max_workers=concurrency_limit) as executor:
+        #     futures = [
+        #         executor.submit(run_single_task_sync, i, input_data)
+        #         for i, input_data in enumerate(data_pool)
+        #     ]
+
+        #     # 创建进度条
+        #     pbar = tqdm(total=len(data_pool), desc="Processing judgements", unit="task")
+
+        #     # 收集结果
+        #     results = []
+        #     completed = 0
+        #     for future in as_completed(futures):
+        #         result = future.result()
+        #         results.append(result)
+        #         completed += 1
+        #         pbar.update(1)
+        #         pbar.set_postfix({"Completed": f"{completed}/{len(data_pool)}"})
+
+        #     pbar.close()
+
+        results = asyncio.run(
+            self.run_all_task(
+                data_pool=data_pool,
+                concurrency_limit=concurrency_limit,
+                model_judgement_function=model_judgement_function,
+                rule_functions=rule_functions,
+            )
+        )
 
         # 处理异常结果
         processed_results = []
