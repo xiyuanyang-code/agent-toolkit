@@ -47,7 +47,7 @@ class OpenAIClient:
             model_config = config['model']
             api_key = model_config.get("api_key")
             api_base = model_config.get("base_url")
-            self.model_name = model_config.get("model", "gpt-4o-2024-11-20")
+            self.model_name = model_config.get("model_name", "gpt-4o-2024-11-20")
             self.max_tokens = model_config.get("max_tokens", 5042)
             self.temperature = model_config.get("temperature", 1.0)
             rate_limit = model_config.get("rate_limit", 200)
