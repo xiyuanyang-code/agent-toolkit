@@ -215,3 +215,4 @@ pyrightconfig.json
 **/*.json
 **/*.jsonl
 output
+spec
