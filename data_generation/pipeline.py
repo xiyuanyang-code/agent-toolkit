@@ -205,8 +205,8 @@ class DataGenerationPipeline:
         client=None,
     ):
         # 如果提供了client参数，则使用它；否则使用实例的client
-        client_to_use = client if client is not None else self.client
-        response = await client_to_use.safe_chat_completion(
+        client_to_use: OpenAIClient = client if client is not None else self.client
+        response, naive_response = await client_to_use.safe_chat_completion(
             prompt=user_prompt, system_prompt=system_prompt
         )
 
@@ -214,6 +214,7 @@ class DataGenerationPipeline:
         result = {
             "input": input_data,
             "response": response,
+            "naive_response": naive_response,
             "timestamp": datetime.now().isoformat(),
         }
 

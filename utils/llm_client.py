@@ -95,7 +95,7 @@ class OpenAIClient:
                 messages=messages,
                 max_tokens=self.max_tokens
             )
-            return response.choices[0].message.content
+            return response.choices[0].message.content, response.model_dump()
         except Exception as e:
             logger.error(f"API 调用失败: {e}")
             return None
